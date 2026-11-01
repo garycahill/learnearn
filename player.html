@@ -1,348 +1,170 @@
-<!doctype html>
+<!DOCTYPE html>
 <html>
-  <head>
-    <meta charset="utf-8" />
-    <meta name="referrer" content="strict-origin-when-cross-origin" />
-    <title>Learn&amp;Earn player bridge</title>
-    <!--
+<head>
+<meta charset="utf-8">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<title>Learn&amp;Earn player bridge</title>
+<!--
   The "bridge": Learn&amp;Earn talks to this page with postMessage.
   It plays videos with the official YouTube IFrame Player API and calls the YouTube Data API.
   It can run inside the app, or be hosted on any https site (e.g. GitHub Pages) — see config.js.
 -->
-    <style>
-      html,
-      body {
-        margin: 0;
-        height: 100%;
-        background: #000;
-        overflow: hidden;
-      }
-      #p,
-      #p iframe {
-        width: 100%;
-        height: 100%;
-        border: 0;
-        display: block;
-      }
-      #demo {
-        position: absolute;
-        top: 0;
-        right: 0;
-        bottom: 0;
-        left: 0;
-        display: none;
-        align-items: center;
-        justify-content: center;
-        flex-direction: column;
-        color: #fff;
-        font:
-          48px Arial,
-          sans-serif;
-        background: linear-gradient(135deg, #20304f, #4a2050);
-        text-align: center;
-      }
-      #demo small {
-        font-size: 28px;
-        opacity: 0.7;
-        margin-top: 16px;
-      }
-    </style>
-  </head>
-  <body>
-    <div id="p"></div>
-    <div id="demo">
-      <div id="dtitle"></div>
-      <small id="dtime"></small>
-    </div>
-    <script>
-      (function () {
-        var demo = /[?&]demo=1/.test(location.search);
-        var player = null,
-          playerReady = false,
-          queued = null,
-          apiLoading = false;
-        var STATES = {
-          "-1": "unstarted",
-          0: "ended",
-          1: "playing",
-          2: "paused",
-          3: "buffering",
-          5: "cued",
-        };
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  #p, #p iframe { width: 100%; height: 100%; border: 0; display: block; }
+  #demo { position: absolute; top: 0; right: 0; bottom: 0; left: 0; display: none; align-items: center; justify-content: center; flex-direction: column;
+          color: #fff; font: 48px Arial, sans-serif; background: linear-gradient(135deg, #20304f, #4a2050); text-align: center; }
+  #demo small { font-size: 28px; opacity: .7; margin-top: 16px; }
+</style>
+</head>
+<body>
+<div id="p"></div>
+<div id="demo"><div id="dtitle"></div><small id="dtime"></small></div>
+<script>
+(function () {
+  var demo = /[?&]demo=1/.test(location.search);
+  var player = null, playerReady = false, queued = null, apiLoading = false;
+  var ccOn = false;   // subtitles wanted? (Learn&Earn tells us per child)
 
-        function send(m) {
-          m.kc = 1;
-          parent.postMessage(m, "*");
+  /* Turn YouTube's captions module on or off to match ccOn */
+  function applyCC() {
+    if (!playerReady || !player) return;
+    try {
+      if (ccOn) { player.loadModule('captions'); }
+      else { player.unloadModule('captions'); player.unloadModule('cc'); }
+    } catch (e) {}
+  }
+  var STATES = { '-1': 'unstarted', '0': 'ended', '1': 'playing', '2': 'paused', '3': 'buffering', '5': 'cued' };
+
+  function send(m) { m.kc = 1; parent.postMessage(m, '*'); }
+
+  /* ---------- YouTube Data API ---------- */
+  function api(path, params, key) {
+    if (demo) return Promise.resolve(fake(path, params));
+    var qs = Object.keys(params).map(function (k) { return k + '=' + encodeURIComponent(params[k]); }).join('&');
+    return fetch('https://www.googleapis.com/youtube/v3/' + path + '?' + qs + '&key=' + encodeURIComponent(key))
+      .then(function (r) { return r.json(); })
+      .then(function (j) { if (j.error) throw new Error(j.error.message || 'YouTube API error'); return j; });
+  }
+
+  /* ---------- Player ---------- */
+  function withPlayer(fn) {
+    if (demo) return fn();
+    if (playerReady) return fn();
+    queued = fn;
+    if (apiLoading) return;
+    apiLoading = true;
+    window.onYouTubeIframeAPIReady = function () {
+      player = new YT.Player('p', {
+        width: '100%', height: '100%',
+        playerVars: { controls: 0, disablekb: 1, rel: 0, fs: 0, iv_load_policy: 3, modestbranding: 1, playsinline: 1, autoplay: 1, cc_load_policy: 0 },
+        events: {
+          onReady: function () { playerReady = true; if (queued) { var q = queued; queued = null; q(); } },
+          onStateChange: function (e) {
+            if (e.data === 1) applyCC();      // re-apply for every new video
+            send({ ev: 'state', state: STATES[e.data] || String(e.data) });
+          },
+          onApiChange: function () { applyCC(); },   // fires when YouTube loads its captions module
+          onError: function (e) { send({ ev: 'error', code: e.data }); }
         }
+      });
+    };
+    var s = document.createElement('script');
+    s.src = 'https://www.youtube.com/iframe_api';
+    s.onerror = function () { send({ ev: 'error', code: 'noapi' }); };
+    document.head.appendChild(s);
+  }
 
-        /* ---------- YouTube Data API ---------- */
-        function api(path, params, key) {
-          if (demo) return Promise.resolve(fake(path, params));
-          var qs = Object.keys(params)
-            .map(function (k) {
-              return k + "=" + encodeURIComponent(params[k]);
-            })
-            .join("&");
-          return fetch(
-            "https://www.googleapis.com/youtube/v3/" +
-              path +
-              "?" +
-              qs +
-              "&key=" +
-              encodeURIComponent(key),
-          )
-            .then(function (r) {
-              return r.json();
-            })
-            .then(function (j) {
-              if (j.error)
-                throw new Error(j.error.message || "YouTube API error");
-              return j;
-            });
-        }
+  setInterval(function () {
+    if (demo) { demoTick(); return; }
+    if (playerReady && player.getCurrentTime) {
+      send({ ev: 'time', t: player.getCurrentTime() || 0, d: player.getDuration() || 0 });
+    }
+  }, 1000);
 
-        /* ---------- Player ---------- */
-        function withPlayer(fn) {
-          if (demo) return fn();
-          if (playerReady) return fn();
-          queued = fn;
-          if (apiLoading) return;
-          apiLoading = true;
-          window.onYouTubeIframeAPIReady = function () {
-            player = new YT.Player("p", {
-              width: "100%",
-              height: "100%",
-              playerVars: {
-                controls: 0,
-                disablekb: 1,
-                rel: 0,
-                fs: 0,
-                iv_load_policy: 3,
-                modestbranding: 1,
-                playsinline: 1,
-                autoplay: 1,
-              },
-              events: {
-                onReady: function () {
-                  playerReady = true;
-                  if (queued) {
-                    var q = queued;
-                    queued = null;
-                    q();
-                  }
-                },
-                onStateChange: function (e) {
-                  send({
-                    ev: "state",
-                    state: STATES[e.data] || String(e.data),
-                  });
-                },
-                onError: function (e) {
-                  send({ ev: "error", code: e.data });
-                },
-              },
-            });
-          };
-          var s = document.createElement("script");
-          s.src = "https://www.youtube.com/iframe_api";
-          s.onerror = function () {
-            send({ ev: "error", code: "noapi" });
-          };
-          document.head.appendChild(s);
-        }
+  /* ---------- Demo player (no network needed) ---------- */
+  var d = { on: false, playing: false, t: 0, dur: 150 };
+  function demoShow(title, start) {
+    document.getElementById('demo').style.display = 'flex';
+    document.getElementById('dtitle').textContent = 'DEMO: ' + title;
+    d.on = true; d.playing = true; d.t = start || 0;
+    send({ ev: 'state', state: 'playing' });
+  }
+  function demoTick() {
+    if (!d.on) return;
+    if (d.playing) d.t++;
+    document.getElementById('dtime').textContent = (d.playing ? 'Playing ' : 'Paused ') + Math.floor(d.t) + ' / ' + d.dur + ' s' + (d.cc ? ' \u00b7 subtitles ON' : ' \u00b7 subtitles off');
+    send({ ev: 'time', t: d.t, d: d.dur });
+    if (d.t >= d.dur && d.playing) { d.playing = false; send({ ev: 'state', state: 'ended' }); }
+  }
 
-        setInterval(function () {
-          if (demo) {
-            demoTick();
-            return;
-          }
-          if (playerReady && player.getCurrentTime) {
-            send({
-              ev: "time",
-              t: player.getCurrentTime() || 0,
-              d: player.getDuration() || 0,
-            });
-          }
-        }, 1000);
+  /* ---------- Messages from Learn&amp;Earn ---------- */
+  window.addEventListener('message', function (e) {
+    var m = e.data;
+    if (!m || !m.kc || m.ev) return;
+    if (m.op === 'api') {
+      api(m.path, m.params || {}, m.key)
+        .then(function (data) { send({ id: m.id, ok: true, data: data }); })
+        .catch(function (err) { send({ id: m.id, ok: false, error: err.message }); });
+      return;
+    }
+    if (m.op === 'cc') { ccOn = !!m.on; if (demo) { d.cc = ccOn; } else applyCC(); return; }
+    if (demo) {
+      if (m.op === 'load') demoShow(m.title || m.videoId, m.start);
+      if (m.op === 'play') { d.playing = true; send({ ev: 'state', state: 'playing' }); }
+      if (m.op === 'pause') { d.playing = false; send({ ev: 'state', state: 'paused' }); }
+      if (m.op === 'seek') { d.t = Math.max(0, Math.min(d.dur, d.t + m.by)); }
+      if (m.op === 'stop') { d.on = false; d.playing = false; document.getElementById('demo').style.display = 'none'; }
+      return;
+    }
+    withPlayer(function () {
+      if (m.op === 'load') player.loadVideoById({ videoId: m.videoId, startSeconds: m.start || 0 });
+      if (m.op === 'play') player.playVideo();
+      if (m.op === 'pause') player.pauseVideo();
+      if (m.op === 'seek') player.seekTo(Math.max(0, player.getCurrentTime() + m.by), true);
+      if (m.op === 'stop') player.stopVideo();
+    });
+  });
 
-        /* ---------- Demo player (no network needed) ---------- */
-        var d = { on: false, playing: false, t: 0, dur: 150 };
-        function demoShow(title, start) {
-          document.getElementById("demo").style.display = "flex";
-          document.getElementById("dtitle").textContent = "DEMO: " + title;
-          d.on = true;
-          d.playing = true;
-          d.t = start || 0;
-          send({ ev: "state", state: "playing" });
-        }
-        function demoTick() {
-          if (!d.on) return;
-          if (d.playing) d.t++;
-          document.getElementById("dtime").textContent =
-            (d.playing ? "Playing " : "Paused ") +
-            Math.floor(d.t) +
-            " / " +
-            d.dur +
-            " s";
-          send({ ev: "time", t: d.t, d: d.dur });
-          if (d.t >= d.dur && d.playing) {
-            d.playing = false;
-            send({ ev: "state", state: "ended" });
-          }
-        }
+  /* ---------- Fake data for DEMO mode ---------- */
+  function fake(path, p) {
+    var chans = { UCdemoScience: 'Demo Science', UCdemoAnimals: 'Demo Animals', UCdemoSpace: 'Demo Space',
+                  UCdemoDinos: 'Demo Dinosaurs', UCdemoArt: 'Demo Drawing Club', UCdemoSongs: 'Demo Songs', UCdemoGrownup: 'Demo Grown-up News' };
+    var handles = { '@demoscience': 'UCdemoScience', '@demoanimals': 'UCdemoAnimals', '@demospace': 'UCdemoSpace' };
+    function ch(id) {
+      return { id: id, status: { madeForKids: id !== 'UCdemoSpace' && id !== 'UCdemoGrownup' }, snippet: { title: chans[id], thumbnails: {} },
+               contentDetails: { relatedPlaylists: { uploads: 'UU' + id.slice(2) } } };
+    }
+    if (path === 'channels') {
+      var ids = p.id ? String(p.id).split(',') : [handles[String(p.forHandle).toLowerCase()]];
+      return { items: ids.filter(function (i) { return chans[i]; }).map(ch) };
+    }
+    if (path === 'playlistItems') {
+      var cid = 'UC' + p.playlistId.slice(2), name = chans[cid] || 'Demo';
+      var items = [];
+      for (var i = 1; i <= 12; i++) items.push({ snippet: { title: name + ' episode ' + i + (i % 4 === 0 ? ' (NOT for kids)' : ''),
+        resourceId: { videoId: p.playlistId + '_' + i }, thumbnails: {}, videoOwnerChannelId: cid, videoOwnerChannelTitle: name } });
+      return { items: items };
+    }
+    if (path === 'videos') {
+      return { items: p.id.split(',').map(function (v) {
+        var n = parseInt(v.split('_').pop(), 10) || 0;
+        return { id: v, status: { embeddable: true, madeForKids: n % 4 !== 0 }, snippet: { liveBroadcastContent: 'none' } };
+      }) };
+    }
+    if (path === 'search' && p.type === 'channel') {
+      return { items: ['UCdemoDinos', 'UCdemoArt', 'UCdemoSongs', 'UCdemoGrownup', 'UCdemoScience'].map(function (id) { return { id: { channelId: id } }; }) };
+    }
+    if (path === 'search') {
+      var r = [];
+      for (var j = 1; j <= 8; j++) r.push({ id: { videoId: 'search_' + j }, snippet: { title: 'Result ' + j + ' for "' + p.q + '"', channelTitle: 'Demo', channelId: 'UCdemoScience', thumbnails: {} } });
+      return { items: r };
+    }
+    return { items: [] };
+  }
 
-        /* ---------- Messages from Learn&amp;Earn ---------- */
-        window.addEventListener("message", function (e) {
-          var m = e.data;
-          if (!m || !m.kc || m.ev) return;
-          if (m.op === "api") {
-            api(m.path, m.params || {}, m.key)
-              .then(function (data) {
-                send({ id: m.id, ok: true, data: data });
-              })
-              .catch(function (err) {
-                send({ id: m.id, ok: false, error: err.message });
-              });
-            return;
-          }
-          if (demo) {
-            if (m.op === "load") demoShow(m.title || m.videoId, m.start);
-            if (m.op === "play") {
-              d.playing = true;
-              send({ ev: "state", state: "playing" });
-            }
-            if (m.op === "pause") {
-              d.playing = false;
-              send({ ev: "state", state: "paused" });
-            }
-            if (m.op === "seek") {
-              d.t = Math.max(0, Math.min(d.dur, d.t + m.by));
-            }
-            if (m.op === "stop") {
-              d.on = false;
-              d.playing = false;
-              document.getElementById("demo").style.display = "none";
-            }
-            return;
-          }
-          withPlayer(function () {
-            if (m.op === "load")
-              player.loadVideoById({
-                videoId: m.videoId,
-                startSeconds: m.start || 0,
-              });
-            if (m.op === "play") player.playVideo();
-            if (m.op === "pause") player.pauseVideo();
-            if (m.op === "seek")
-              player.seekTo(Math.max(0, player.getCurrentTime() + m.by), true);
-            if (m.op === "stop") player.stopVideo();
-          });
-        });
-
-        /* ---------- Fake data for DEMO mode ---------- */
-        function fake(path, p) {
-          var chans = {
-            UCdemoScience: "Demo Science",
-            UCdemoAnimals: "Demo Animals",
-            UCdemoSpace: "Demo Space",
-            UCdemoDinos: "Demo Dinosaurs",
-            UCdemoArt: "Demo Drawing Club",
-            UCdemoSongs: "Demo Songs",
-            UCdemoGrownup: "Demo Grown-up News",
-          };
-          var handles = {
-            "@demoscience": "UCdemoScience",
-            "@demoanimals": "UCdemoAnimals",
-            "@demospace": "UCdemoSpace",
-          };
-          function ch(id) {
-            return {
-              id: id,
-              status: {
-                madeForKids: id !== "UCdemoSpace" && id !== "UCdemoGrownup",
-              },
-              snippet: { title: chans[id], thumbnails: {} },
-              contentDetails: {
-                relatedPlaylists: { uploads: "UU" + id.slice(2) },
-              },
-            };
-          }
-          if (path === "channels") {
-            var ids = p.id
-              ? String(p.id).split(",")
-              : [handles[String(p.forHandle).toLowerCase()]];
-            return {
-              items: ids
-                .filter(function (i) {
-                  return chans[i];
-                })
-                .map(ch),
-            };
-          }
-          if (path === "playlistItems") {
-            var cid = "UC" + p.playlistId.slice(2),
-              name = chans[cid] || "Demo";
-            var items = [];
-            for (var i = 1; i <= 12; i++)
-              items.push({
-                snippet: {
-                  title:
-                    name +
-                    " episode " +
-                    i +
-                    (i % 4 === 0 ? " (NOT for kids)" : ""),
-                  resourceId: { videoId: p.playlistId + "_" + i },
-                  thumbnails: {},
-                  videoOwnerChannelId: cid,
-                  videoOwnerChannelTitle: name,
-                },
-              });
-            return { items: items };
-          }
-          if (path === "videos") {
-            return {
-              items: p.id.split(",").map(function (v) {
-                var n = parseInt(v.split("_").pop(), 10) || 0;
-                return {
-                  id: v,
-                  status: { embeddable: true, madeForKids: n % 4 !== 0 },
-                  snippet: { liveBroadcastContent: "none" },
-                };
-              }),
-            };
-          }
-          if (path === "search" && p.type === "channel") {
-            return {
-              items: [
-                "UCdemoDinos",
-                "UCdemoArt",
-                "UCdemoSongs",
-                "UCdemoGrownup",
-                "UCdemoScience",
-              ].map(function (id) {
-                return { id: { channelId: id } };
-              }),
-            };
-          }
-          if (path === "search") {
-            var r = [];
-            for (var j = 1; j <= 8; j++)
-              r.push({
-                id: { videoId: "search_" + j },
-                snippet: {
-                  title: "Result " + j + ' for "' + p.q + '"',
-                  channelTitle: "Demo",
-                  channelId: "UCdemoScience",
-                  thumbnails: {},
-                },
-              });
-            return { items: r };
-          }
-          return { items: [] };
-        }
-
-        send({ ev: "hello", demo: demo });
-      })();
-    </script>
-  </body>
+  send({ ev: 'hello', demo: demo });
+})();
+</script>
+</body>
 </html>
