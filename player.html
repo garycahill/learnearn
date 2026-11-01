@@ -108,6 +108,14 @@
         .catch(function (err) { send({ id: m.id, ok: false, error: err.message }); });
       return;
     }
+    if (m.op === 'focusPlayer') {      // experimental: let the remote's keys reach YouTube's own player (for Skip ad)
+      try { var f = player && player.getIframe && player.getIframe(); if (f) { f.setAttribute('tabindex', '0'); f.focus(); } } catch (e) {}
+      return;
+    }
+    if (m.op === 'releasePlayer') {
+      try { var f2 = player && player.getIframe && player.getIframe(); if (f2) f2.blur(); window.blur(); } catch (e) {}
+      return;
+    }
     if (m.op === 'cc') { ccOn = !!m.on; if (demo) { d.cc = ccOn; } else applyCC(); return; }
     if (demo) {
       if (m.op === 'load') demoShow(m.title || m.videoId, m.start);
