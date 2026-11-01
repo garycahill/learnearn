@@ -98,6 +98,25 @@
     if (d.t >= d.dur && d.playing) { d.playing = false; send({ ev: 'state', state: 'ended' }); }
   }
 
+  /* ---------- Experimental Skip-ad handover ----------
+     Learn&Earn focuses this page; the first key that arrives HERE (a real key press, so the browser allows it)
+     is used to move focus one level deeper, into YouTube's own player, where the Skip button lives. */
+  var handover = false;
+  function focusYouTube(why) {
+    try {
+      var f = player && player.getIframe && player.getIframe();
+      if (!f) { send({ ev: 'diag', msg: 'no YouTube player to focus (' + why + ')' }); return; }
+      f.setAttribute('tabindex', '0');
+      f.focus();
+      send({ ev: 'diag', msg: 'focused YouTube player (' + why + '); active=' + (document.activeElement === f ? 'YouTube' : (document.activeElement && document.activeElement.tagName)) });
+    } catch (e) { send({ ev: 'diag', msg: 'focus error: ' + e.message }); }
+  }
+  document.addEventListener('keydown', function (e) {
+    if (!handover) return;
+    send({ ev: 'diag', msg: 'player page got key ' + e.keyCode });
+    focusYouTube('key ' + e.keyCode);
+  });
+
   /* ---------- Messages from Learn&amp;Earn ---------- */
   window.addEventListener('message', function (e) {
     var m = e.data;
@@ -109,10 +128,12 @@
       return;
     }
     if (m.op === 'focusPlayer') {      // experimental: let the remote's keys reach YouTube's own player (for Skip ad)
-      try { var f = player && player.getIframe && player.getIframe(); if (f) { f.setAttribute('tabindex', '0'); f.focus(); } } catch (e) {}
+      handover = true;
+      focusYouTube('asked by Learn&Earn');
       return;
     }
     if (m.op === 'releasePlayer') {
+      handover = false;
       try { var f2 = player && player.getIframe && player.getIframe(); if (f2) f2.blur(); window.blur(); } catch (e) {}
       return;
     }
